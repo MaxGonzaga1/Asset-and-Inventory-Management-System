@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>USTP-CDO Computer Lab Inventory and Asset Management</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; background: #f4f5f9; }
+    h1 { text-align: center; }
+    .container { display: flex; gap: 20px; }
+    .section { background: #fbfbfc; padding: 15px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); flex: 1; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+    table, th, td { border: 1px solid #ccc; }
+    th, td { padding: 8px; text-align: center; }
+    button { padding: 5px 10px; margin: 2px; cursor: pointer; border: none; border-radius: 4px; }
+    .available { background-color: #d4edda; }
+    .borrowed { background-color: #f8d7da; }
+    .maintenance { background-color: #fff3cd; }
+    .btn-borrow { background: #28a745; color: white; }
+    .btn-return { background: #007bff; color: white; }
+    .btn-maintain { background: #ffc107; }
+    .btn-fix { background: #17a2b8; color: white; }
+    .btn-remove { background: #dc3545; color: white; }
+    .btn-edit { background: #6c757d; color: white; }
+    .btn-drag { cursor: grab; }
+    #searchBar, #reportSearchBar { width: 100%; padding: 8px; margin-bottom: 10px; border-radius: 4px; border: 1px solid #ccc; }
+  </style>
+</head>
+<body>
+  <h1>USTP-CDO Computer Laboratory <br> Inventory and Asset Management System</h1>
+  
+  <div class="container">
+    <!-- Assets -->
+    <div class="section">
+      <h2>Assets</h2>
+      <input type="text" id="searchBar" placeholder="Search assets...">
+      <input type="text" id="newAssetName" placeholder="New Asset Name">
+      <button onclick="addAsset()">Add Asset</button>
+      <table id="assetTable">
+        <thead>
+          <tr><th>Drag</th><th>Asset Name</th><th>Status</th><th>Borrower</th><th>Actions</th></tr>
+        </thead>
+        <tbody id="assetTableBody"></tbody>
+      </table>
+    </div>
+
+    <!-- Reports -->
+    <div class="section">
+      <h2>Reports</h2>
+      <div style="margin-bottom:10px;">
+        <input type="text" id="reportSearchBar" placeholder="Search reports...">
+        <select id="actionFilter">
+          <option value="">All Actions</option>
+          <option value="Added">Added</option>
+          <option value="Borrowed">Borrowed</option>
+          <option value="Returned">Returned</option>
+          <option value="Damaged">Damaged</option>
+          <option value="Fixed">Fixed</option>
+          <option value="Removed">Removed</option>
+          <option value="Renamed">Renamed</option>
+        </select>
+        From: <input type="date" id="fromDate">
+        To: <input type="date" id="toDate">
+        <button onclick="exportCSV()">Export to CSV</button>
+      </div>
+      <table id="reportTable">
+        <thead>
+          <tr><th>Asset</th><th>Borrower</th><th>Action</th><th>Date</th></tr>
+        </thead>
+        <tbody id="reportTableBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <button onclick="window.location.href='LoginSystem.html'">Log Out</button>
+
+  <script>
+    let assets = [];
+    let reports = [];
+
+    function renderAssets() {
+      const body = document.getElementById('assetTableBody');
+      body.innerHTML = '';
+      const searchTerm = document.getElementById('searchBar').value.toLowerCase();
+      assets.forEach((asset, index) => {
+        if (!asset.name.toLowerCase().includes(searchTerm)) return;
+        const row = document.createElement('tr');
+        row.className = asset.status;
+        row.draggable = true;
+        row.ondragstart = (e) => dragStart(e, index);
+        row.ondragover = (e) => e.preventDefault();
+        row.ondrop = (e) => drop(e, index);
+
+        row.innerHTML = `
+          <td class="btn-drag">⠿</td>
+          <td contenteditable="true" onblur="editAsset(${index}, this.innerText)">${asset.name}</td>
+          <td>${asset.status}</td>
+          <td>${asset.borrower || '-'}</td>
+          <td>
+            ${asset.status === 'available' ? `<button class="btn-borrow" onclick="borrowAsset(${index})">Borrow</button>` : ''}
+            ${asset.status === 'borrowed' ? `<button class="btn-return" onclick="returnAsset(${index})">Return</button>` : ''}
+            ${asset.status === 'borrowed' ? `<button class="btn-maintain" onclick="reportDamage(${index})">Report Damage</button>` : ''}
+            ${asset.status === 'maintenance' ? `<button class="btn-fix" onclick="fixAsset(${index})">Fix</button>` : ''}
+            <button class="btn-remove" onclick="removeAsset(${index})">Remove</button>
+          </td>
+        `;
+        body.appendChild(row);
+      });
+    }
+
+    // Fixed renderReports: action filter uses includes() (case-insensitive) so "Renamed to X" matches "Renamed"
+    function renderReports() {
+      const body = document.getElementById('reportTableBody');
+      body.innerHTML = '';
+      const searchTerm = document.getElementById('reportSearchBar').value.toLowerCase();
+      const actionFilter = document.getElementById('actionFilter').value;
+      const fromDate = document.getElementById('fromDate').value;
+      const toDate = document.getElementById('toDate').value;
+
+      reports.forEach(r => {
+        const actionLower = (r.action || '').toLowerCase();
+        const assetLower = (r.asset || '').toLowerCase();
+        const borrowerLower = ((r.borrower || '-') + '').toLowerCase();
+
+        const matchesSearch =
+          assetLower.includes(searchTerm) ||
+          borrowerLower.includes(searchTerm) ||
+          actionLower.includes(searchTerm);
+
+        // <-- CHANGE: use includes for partial/case-insensitive match (handles "Renamed to X")
+        const matchesAction = !actionFilter || actionLower.includes(actionFilter.toLowerCase());
+
+        // date filtering - attempt to parse date string; if invalid, skip date filtering for that row
+        let reportDate = new Date(r.date);
+        if (isNaN(reportDate.getTime())) {
+          // try to parse if r.date was localized: fall back to Date.parse (best effort)
+          reportDate = new Date(Date.parse(r.date));
+        }
+        const matchesFrom = !fromDate || (reportDate && reportDate >= new Date(fromDate));
+        const matchesTo = !toDate || (reportDate && reportDate <= new Date(toDate + 'T23:59:59'));
+
+        if (!(matchesSearch && matchesAction && matchesFrom && matchesTo)) return;
+
+        const row = document.createElement('tr');
+        row.innerHTML = `<td>${r.asset}</td><td>${r.borrower || '-'}</td><td>${r.action}</td><td>${r.date}</td>`;
+        body.appendChild(row);
+      });
+    }
+
+    function addAsset() {
+      const name = document.getElementById('newAssetName').value.trim();
+      if (!name) return;
+      assets.push({ name, status: 'available', borrower: null });
+      addReport(name, null, 'Added'); // automatically record "Added"
+      document.getElementById('newAssetName').value = '';
+      renderAssets(); renderReports();
+    }
+
+    function borrowAsset(index) {
+      const borrower = prompt("ENTER STUDENT ID NUMBER:");
+      if (!borrower) return;
+      assets[index].status = 'borrowed';
+      assets[index].borrower = borrower;
+      addReport(assets[index].name, borrower, 'Borrowed');
+      renderAssets(); renderReports();
+    }
+
+    function returnAsset(index) {
+      addReport(assets[index].name, assets[index].borrower, 'Returned');
+      assets[index].status = 'available';
+      assets[index].borrower = null;
+      renderAssets(); renderReports();
+    }
+
+    function reportDamage(index) {
+      addReport(assets[index].name, assets[index].borrower, 'Damaged');
+      assets[index].status = 'maintenance';
+      assets[index].borrower = null;
+      renderAssets(); renderReports();
+    }
+
+    function fixAsset(index) {
+      addReport(assets[index].name, null, 'Fixed and Available');
+      assets[index].status = 'available';
+      renderAssets(); renderReports();
+    }
+
+    function removeAsset(index) {
+      addReport(assets[index].name, null, 'Removed');
+      assets.splice(index, 1);
+      renderAssets(); renderReports();
+    }
+
+    function editAsset(index, newName) {
+      const oldName = assets[index].name;
+      assets[index].name = newName;
+      addReport(oldName, null, `Renamed to ${newName}`);
+      renderAssets(); renderReports();
+    }
+
+    function addReport(asset, borrower, action) {
+      // store a consistent ISO date string for robust filtering, but display locale string
+      const iso = new Date().toISOString();
+      const display = new Date(iso).toLocaleString();
+      reports.push({ asset, borrower, action, dateISO: iso, date: display });
+    }
+
+    function exportCSV() {
+      let csv = "Asset,Borrower,Action,Date\n";
+      reports.forEach(r => {
+        csv += `${r.asset},${r.borrower || '-'},${r.action},${r.date}\n`;
+      });
+      const blob = new Blob([csv], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'reports.csv';
+      a.click();
+    }
+
+    let dragSrcIndex = null;
+    function dragStart(e, index) { dragSrcIndex = index; }
+    function drop(e, index) {
+      const temp = assets[dragSrcIndex];
+      assets.splice(dragSrcIndex, 1);
+      assets.splice(index, 0, temp);
+      renderAssets();
+    }
+
+    // Event listeners
+    document.getElementById('searchBar').addEventListener('input', renderAssets);
+    document.getElementById('reportSearchBar').addEventListener('input', renderReports);
+    document.getElementById('actionFilter').addEventListener('change', renderReports);
+    document.getElementById('fromDate').addEventListener('change', renderReports);
+    document.getElementById('toDate').addEventListener('change', renderReports);
+
+    // initial render
+    renderAssets(); renderReports();
+
+    let users = [
+  { username: "admin", role: "Admin" },
+  { username: "staff1", role: "Staff" },
+  { username: "student1", role: "Student" }
+];
+
+function renderUsers() {
+  const body = document.getElementById('userTableBody');
+  body.innerHTML = '';
+  const searchTerm = document.getElementById('userSearchBar').value.toLowerCase();
+
+  users.forEach((user, index) => {
+    if (!user.username.toLowerCase().includes(searchTerm) &&
+        !user.role.toLowerCase().includes(searchTerm)) return;
+
+    const row = document.createElement('tr');
+    row.innerHTML = `
+      <td contenteditable="true" onblur="editUserName(${index}, this.innerText)">${user.username}</td>
+      <td>
+        <select onchange="changeUserRole(${index}, this.value)">
+          <option value="Admin" ${user.role === 'Admin' ? 'selected' : ''}>Admin</option>
+          <option value="Staff" ${user.role === 'Staff' ? 'selected' : ''}>Staff</option>
+          <option value="Student" ${user.role === 'Student' ? 'selected' : ''}>Student</option>
+        </select>
+      </td>
+      <td>
+        <button class="btn-remove" onclick="removeUser(${index})">Remove</button>
+      </td>
+    `;
+    body.appendChild(row);
+  });
+}
+
+function addUser() {
+  const username = document.getElementById('newUserName').value.trim();
+  const role = document.getElementById('newUserRole').value;
+  if (!username) return alert('Please enter a username');
+  
+  // Check if username exists
+  if (users.some(u => u.username.toLowerCase() === username.toLowerCase())) {
+    alert('Username already exists!');
+    return;
+  }
+
+  users.push({ username, role });
+  addReport(username, null, `User Added (${role})`);
+  document.getElementById('newUserName').value = '';
+  renderUsers(); renderReports();
+}
+
+function editUserName(index, newName) {
+  const oldName = users[index].username;
+  if (!newName.trim()) {
+    alert("Username cannot be empty!");
+    return renderUsers();
+  }
+  users[index].username = newName.trim();
+  addReport(oldName, null, `User Renamed to ${newName}`);
+  renderUsers(); renderReports();
+}
+
+function changeUserRole(index, newRole) {
+  const oldRole = users[index].role;
+  users[index].role = newRole;
+  addReport(users[index].username, null, `Role Changed: ${oldRole} → ${newRole}`);
+  renderUsers(); renderReports();
+}
+
+function removeUser(index) {
+  addReport(users[index].username, null, 'User Removed');
+  users.splice(index, 1);
+  renderUsers(); renderReports();
+}
+
+// Event listener for searching users
+document.getElementById('userSearchBar').addEventListener('input', renderUsers);
+
+// Initial render
+renderUsers();
+
+  </script>
+</body>
+</html>
